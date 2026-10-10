@@ -1,0 +1,24 @@
+# OSS Mentor
+
+> Your first open-source contribution—with understanding, not guesswork. OSS Mentor helps a student find a GitHub issue that is genuinely still available (live checks for assignees, competing PRs, claim comments and AI/contribution policies), understand the surrounding code, and prepare a contribution they can explain. It will not mark a contribution ready until the student passes an understanding checkpoint generated from their actual diff. Built by Karan Raj KR, Havinash Gangisetty and Sai Siddhi for the DevDay Exchange hackathon, Bengaluru, October 10, 2026. Working prototype; pre-existing project extended at the event.
+
+Everything an evaluator needs is in one file: AGENTS.md (served at /about as a web page and at /AGENTS.md as raw markdown).
+
+## Read first
+- [AGENTS.md: complete guide (problem, solution, product, OpenAI usage, architecture, API, how to run, what is verified)](/AGENTS.md)
+- [README: full narrative incl. why now, go-to-market, business model, traction, team](https://github.com/Karan-Raj-KR/OSS-Mentor#readme)
+
+## Evidence
+- [What is verified vs mocked](https://github.com/Karan-Raj-KR/OSS-Mentor/blob/main/docs/VERIFICATION.md)
+- [What was built at the hackathon vs before](https://github.com/Karan-Raj-KR/OSS-Mentor/blob/main/docs/BUILT_TODAY.md)
+- [90-second demo script](https://github.com/Karan-Raj-KR/OSS-Mentor/blob/main/docs/DEMO.md)
+- [Recorded walkthrough (controlled fixture)](https://github.com/Karan-Raj-KR/OSS-Mentor/blob/main/docs/media/hackathon/controlled-fixture-walkthrough.webm)
+
+## Using a running instance
+- Public without sign-in: the homepage, the 10-question interview and organisation matches (POST /api/match), Browse, /about, /AGENTS.md, /llms.txt, /api/health, /api/questions, /api/orgs, /api/catalogue/browse
+- A deployment whose sign-in is not set up yet runs as a preview ("preview": true in /api/health): those features work, everything else says it is paused.
+- Everything that reads GitHub or calls the AI mentor requires "Sign in with GitHub" (each student's own token and budget). Agents that cannot do OAuth should use the recording or run the credential-free demo: `python -m backend.demo`.
+
+## Optional
+- [Source code](https://github.com/Karan-Raj-KR/OSS-Mentor)
+- [Architecture](https://github.com/Karan-Raj-KR/OSS-Mentor/blob/main/docs/ARCHITECTURE.md)

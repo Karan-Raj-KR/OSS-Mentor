@@ -1,0 +1,18 @@
+{
+  "repo": "pallets/flask",
+  "number": 6146,
+  "url": "https://github.com/pallets/flask/issues/6146",
+  "verification": {
+    "state": "open",
+    "assignees": [],
+    "claimed": false,
+    "availability": "no_conflict_found",
+    "ok": true,
+    "reason": "",
+    "checked_at": "2026-10-10T07:03:07.379467+00:00",
+    "linked_prs": [],
+    "unchecked": []
+  },
+  "policy_status": "unknown",
+  "policy_files": []
+}

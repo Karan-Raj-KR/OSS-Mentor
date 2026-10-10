@@ -1,0 +1,573 @@
+import json
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from backend import config, db, llm, matcher, replier, usage
+
+
+def fake_resp(text="ok", inp=1000, out=100, cr=0, cw=0):
+    return SimpleNamespace(
+        output_text=text, status="completed",
+        usage=SimpleNamespace(input_tokens=inp, output_tokens=out,
+                              input_tokens_details=SimpleNamespace(cached_tokens=cr)))
+
+
+class FakeClient:
+    def __init__(self, resp):
+        self.calls = []
+        self.responses = SimpleNamespace(create=self._create)
+        self.resp = resp
+
+    def _create(self, **kw):
+        self.calls.append(kw)
+        return self.resp
+
+
+@pytest.fixture
+def isolated(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(llm, "USAGE_FILE", tmp_path / "usage.json")
+    monkeypatch.setattr(llm, "ledger", llm.Ledger())
+    fc = FakeClient(fake_resp())
+    monkeypatch.setattr(llm, "_client", fc)
+    return fc
+
+
+# ---- matcher
+PROFILE = dict(languages=["Python"], skill="beginner", interests=["web"], goal="hackathon",
+               git_level="never", machine="low", legal="both")
+
+
+def test_matcher_prefers_fit():
+    top = matcher.rank(PROFILE, top=3)
+    orgs = {o["name"]: o for o in matcher.catalogue()}
+    assert all(0 <= t["total"] <= 55 for t in top)
+    assert top[0]["total"] >= top[1]["total"] >= top[2]["total"]
+    for t in top:  # a Python/web beginner on a low-spec laptop must not be sent to heavy, advanced projects
+        assert "Python" in orgs[t["org"]]["languages"] and orgs[t["org"]]["beginner"] >= 3
+
+
+def test_matcher_cla_gate():
+    r = matcher.score_org(next(o for o in matcher.catalogue() if o["name"] == "Kubernetes"), {**PROFILE, "legal": "dco"})
+    assert r["total"] == 0 and r["gate"]
+
+
+# ---- llm: tiers, effort, caching, budget
+def test_responses_contract_preserves_tiers_and_output_limits(isolated):
+    llm.ask(tier="cheap", system="s", messages=[{"role": "user", "content": "a"}], max_tokens=50)
+    llm.ask(tier="smart", system="s", messages=[{"role": "user", "content": "b"}], max_tokens=50)
+    cheap, smart = isolated.calls
+    assert cheap["model"] == config.MODEL_CHEAP and "output_config" not in cheap
+    assert smart["model"] == config.MODEL_SMART and "output_config" not in smart
+    assert cheap["max_output_tokens"] == 50 and cheap["store"] is False
+    assert cheap["instructions"] == "s" and cheap["input"] == [{"role": "user", "content": "a"}]
+
+
+def test_disk_cache_is_free(isolated):
+    a = llm.ask(tier="cheap", system="s", messages=[{"role": "user", "content": "same"}], max_tokens=50)
+    b = llm.ask(tier="cheap", system="s", messages=[{"role": "user", "content": "same"}], max_tokens=50)
+    assert a["cost_usd"] > 0 and b["cost_usd"] == 0 and b["cached"]
+    assert len(isolated.calls) == 1
+
+
+def test_session_budget_blocks(isolated, monkeypatch):
+    monkeypatch.setattr(config, "SESSION_BUDGET_USD", 0.0001)
+    with pytest.raises(llm.BudgetExceeded):
+        llm.ask(tier="smart", system="s", messages=[{"role": "user", "content": "x"}], max_tokens=4000)
+    assert isolated.calls == []  # blocked before spending anything
+
+
+def test_cost_math():
+    assert llm.cost_of("gpt-4.1-mini", 1_000_000, 0) == pytest.approx(0.4)
+    assert llm.cost_of("gpt-4.1-mini", 1_000_000, 0, cache_read=1_000_000) == pytest.approx(0.1)
+    with pytest.raises(llm.MentorError):
+        llm.cost_of("unknown-model", 1_000_000, 0)
+
+
+def test_parse_json_tolerates_prose():
+    assert llm.parse_json('Sure! {"a": [1, 2]} done') == {"a": [1, 2]}
+
+
+# ---- replier gating
+def test_parse_pr():
+    assert replier.parse_pr("https://github.com/o/r/pull/12/files") == ("o", "r", 12)
+
+
+def test_send_disabled_by_default(monkeypatch):
+    monkeypatch.setattr(config, "AUTO_POST_REPLIES", False)
+    with pytest.raises(PermissionError):
+        replier.send("https://github.com/o/r/pull/1", [{"id": 1, "source": "issue", "reply": "hi"}])
+
+
+def test_send_blocked_when_policy_flags_ai(monkeypatch):
+    monkeypatch.setattr(config, "AUTO_POST_REPLIES", True)
+    monkeypatch.setattr(config, "GITHUB_TOKEN", "t")
+    monkeypatch.setattr(replier, "_ai_flags", lambda o, r: [{"file": "AGENTS.md", "line": "no AI messages"}])
+    posted = []
+    monkeypatch.setattr(replier.github, "post", lambda *a, **k: posted.append(a))
+    with pytest.raises(PermissionError):
+        replier.send("https://github.com/o/r/pull/1", [{"id": 1, "source": "issue", "reply": "hi"}])
+    assert posted == []
+
+
+def test_send_needs_token(monkeypatch):
+    monkeypatch.setattr(config, "AUTO_POST_REPLIES", True)
+    monkeypatch.setattr(config, "GITHUB_TOKEN", "")
+    monkeypatch.setattr(replier, "_ai_flags", lambda o, r: [])
+    with pytest.raises(PermissionError):
+        replier.send("https://github.com/o/r/pull/1", [{"id": 1, "source": "issue", "reply": "hi"}])
+
+
+def test_send_appends_disclosure_and_records(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "AUTO_POST_REPLIES", True)
+    monkeypatch.setattr(config, "GITHUB_TOKEN", "t")
+    monkeypatch.setattr(db, "PATH", tmp_path / "r.db"); db._ready.clear()
+    monkeypatch.setattr(replier, "_ai_flags", lambda o, r: [])
+    posted = []
+    monkeypatch.setattr(replier.github, "post", lambda path, body, token=None: posted.append((path, body)))
+    replier.send("https://github.com/o/r/pull/1",
+                 [{"id": 5, "source": "review", "reply": "Fixed."}, {"id": 6, "source": "issue", "reply": ""}])
+    assert len(posted) == 1 and posted[0][0].endswith("/pulls/1/comments/5/replies")
+    assert config.AI_DISCLOSURE in posted[0][1]["body"]
+    assert replier._handled("local", "o/r#1") == {5}          # remembered, per student
+    assert replier._handled("someone-else", "o/r#1") == set()
+
+
+# ---- github failure must never look like "no policy found"
+def test_rate_limit_is_not_silently_clear(monkeypatch):
+    import httpx
+    from backend import github
+
+    def boom(path, params=None, token=None):
+        req = httpx.Request("GET", "https://api.github.com/x")
+        raise httpx.HTTPStatusError("rate limit", request=req, response=httpx.Response(403, request=req))
+
+    monkeypatch.setattr(github, "get", boom)
+    with pytest.raises(httpx.HTTPStatusError):
+        github.raw_file("o", "r", "CONTRIBUTING.md")
+    with pytest.raises(httpx.HTTPStatusError):
+        github.search_free_issues("org:o", 0)
+
+
+def test_missing_file_is_none(monkeypatch):
+    import httpx
+    from backend import github
+
+    def nf(path, params=None, token=None):
+        req = httpx.Request("GET", "https://api.github.com/x")
+        raise httpx.HTTPStatusError("nf", request=req, response=httpx.Response(404, request=req))
+
+    monkeypatch.setattr(github, "get", nf)
+    assert github.raw_file("o", "r", "AI_POLICY.md") is None
+
+
+# ---- multi-user auth
+def _hosted(monkeypatch):
+    from backend import auth
+    monkeypatch.setattr(config, "GITHUB_CLIENT_ID", "id")
+    monkeypatch.setattr(config, "GITHUB_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(config, "BASE_URL", "http://testserver")
+    auth.SESSIONS.clear()
+    auth.SESSIONS["sidA"] = auth.User(login="alice", token="tokA")
+    auth.SESSIONS["sidB"] = auth.User(login="bob", token="tokB")
+    from fastapi.testclient import TestClient
+    from backend.app import app
+    return TestClient(app), auth
+
+
+MATCH = {"languages": ["Python"], "interests": ["web"]}
+
+
+def test_hosted_requires_login(monkeypatch):
+    c, _ = _hosted(monkeypatch)
+    assert c.post("/api/match", json=MATCH).status_code == 200      # deterministic, free, stores nothing: no sign-in needed
+    assert c.post("/api/scout", json={"org": "zulip", "profile": {}}).status_code == 401
+    assert c.get("/api/profile").status_code == 401
+    assert c.get("/api/usage").status_code == 401
+    assert c.get("/api/health").status_code == 200  # public
+
+
+def test_hosted_logged_in_ok(monkeypatch):
+    c, _ = _hosted(monkeypatch)
+    r = c.post("/api/match", json=MATCH, cookies={"oss_session": "sidA"})
+    assert r.status_code == 200 and r.json()["ranking"]
+    assert c.get("/api/me", cookies={"oss_session": "sidA"}).json()["login"] == "alice"
+
+
+def test_cross_origin_post_blocked(monkeypatch):
+    c, _ = _hosted(monkeypatch)
+    r = c.post("/api/match", json=MATCH, cookies={"oss_session": "sidA"}, headers={"origin": "https://evil.example"})
+    assert r.status_code == 403
+
+
+def test_usage_is_per_user(monkeypatch):
+    c, _ = _hosted(monkeypatch)
+    monkeypatch.setattr(llm, "ledger", llm.Ledger())
+    usage.add("alice", 0.2, 10, 10) if usage.persistent() else setattr(llm.ledger.session("alice"), "cost_usd", 0.2)
+    a = c.get("/api/usage", cookies={"oss_session": "sidA"}).json()["session"]["cost_usd"]
+    b = c.get("/api/usage", cookies={"oss_session": "sidB"}).json()["session"]["cost_usd"]
+    assert (a, b) == (0.2, 0)
+
+
+def test_cannot_draft_for_someone_elses_pr(monkeypatch):
+    _hosted(monkeypatch)
+    monkeypatch.setattr(replier.github, "get", lambda path, params=None, token=None: {"user": {"login": "carol"}, "title": "t"})
+    with pytest.raises(PermissionError):
+        replier.fetch_new_comments("o", "r", 1, "alice")
+
+
+def test_github_cache_not_shared_between_tokens(monkeypatch):
+    import httpx
+    from backend import auth, github
+    github._cache.clear()
+    calls = []
+
+    class R:
+        def __init__(self, tok): self.tok = tok
+        def raise_for_status(self): pass
+        def json(self): return {"seen_by": self.tok}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(headers.get("Authorization"))
+        return R(headers.get("Authorization"))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    auth.current_token.set("tokA"); a = github.get("/repos/o/private")
+    auth.current_token.set("tokB"); b = github.get("/repos/o/private")
+    assert a != b and len(calls) == 2
+
+
+def test_hosted_never_uses_operator_gh_login(monkeypatch):
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "x")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(config, "GITHUB_CLIENT_ID", "x")
+    assert config._github_token() == ""
+
+
+def test_token_reaches_endpoint_thread(monkeypatch):
+    c, auth = _hosted(monkeypatch)
+    from backend import agents
+    seen = {}
+    monkeypatch.setattr(agents, "scout", lambda org, profile, sid, repo=None, fallbacks=None: seen.update(tok=auth.current_token.get(), sid=sid) or {"picks": []})
+    r = c.post("/api/scout", json={"org": "zulip", "profile": {}}, cookies={"oss_session": "sidB"})
+    assert r.status_code == 200 and seen == {"tok": "tokB", "sid": "bob"}
+
+
+def test_orgs_endpoint_is_public_and_minimal(monkeypatch):
+    c, _ = _hosted(monkeypatch)
+    r = c.get("/api/orgs")  # no login: the 3D galaxy must render before sign-in
+    assert r.status_code == 200 and len(r.json()) >= 10
+    assert {"name", "github", "languages", "domains", "beginner", "notes"} <= set(r.json()[0])
+    assert not any(k in r.json()[0] for k in ("token", "secret", "legal"))
+
+
+def test_curated_catalogue_is_large_and_well_formed():
+    cat = matcher.curated()
+    assert len(cat) >= 100
+    names = [o["name"] for o in cat]
+    logins = [o["github"].lower() for o in cat]
+    assert len(set(names)) == len(names) and len(set(logins)) == len(logins)
+    for o in cat:
+        assert o["languages"] and o["domains"] and o["setup"] in ("light", "medium", "heavy")
+        assert 1 <= o["beginner"] <= 5 and 1 <= o["hackathon"] <= 5
+
+
+def test_every_quiz_interest_and_language_has_orgs():
+    from backend.app import QUESTIONS
+    cat = matcher.curated()
+    for q in QUESTIONS:
+        if q["id"] == "interests":
+            for v, _ in q["options"]:
+                assert any(v in o["domains"] for o in cat), v
+        if q["id"] == "languages":
+            for v, _ in q["options"]:
+                assert any(v in o["languages"] for o in cat), v
+
+
+def test_rank_all_returns_runner_ups_without_gated(monkeypatch):
+    top, others = matcher.rank_all({**PROFILE, "legal": "dco"})
+    assert len(top) == 3 and 1 <= len(others) <= 24
+    assert all(not o["gate"] for o in others) and not {t["org"] for t in top} & {o["org"] for o in others}
+
+
+def test_discover_dedupes_known_and_one_per_owner(monkeypatch):
+    from backend import github
+    def item(full, stars, owner=None):
+        o = owner or full.split("/")[0]
+        return {"full_name": full, "owner": {"login": o}, "stargazers_count": stars, "description": "d", "language": "Python",
+                "pushed_at": "2026-09-01T00:00:00Z", "topics": [], "license": None, "html_url": "u", "open_issues_count": 5}
+    queries = []
+    def fake_get(path, params=None, token=None):
+        queries.append(params["q"])
+        return {"items": [item("zulip/zulip", 99999), item("a/x", 500), item("a/y", 900), item("b/z", 700)]}
+    monkeypatch.setattr(github, "get", fake_get)
+    out = github.discover(["Python"], ["web"], known={"zulip"})
+    assert [r["repo"] for r in out] == ["a/y", "b/z"]          # known org removed, one repo per owner, by stars
+    assert "good-first-issues:>3" in queries[0] and "language:Python" in queries[0] and "topic:web" in queries[0]
+    assert "archived:false" in queries[0]
+
+
+def test_discover_endpoint_requires_login_when_hosted(monkeypatch):
+    c, _ = _hosted(monkeypatch)
+    assert c.get("/api/discover?languages=Python").status_code == 401
+
+
+# ---- scouting: widening, fallback, claims, verify
+def _issue(repo, n, comments=1):
+    return {"number": n, "title": f"t{n}", "url": "u", "repo": repo, "labels": [], "comments": comments, "updated": "2026-10-01T00:00:00Z", "body": ""}
+
+
+def _stub_scout(monkeypatch, per_scope, claims=(), prs=()):
+    from backend import agents, github
+    calls = []
+
+    def search(scope, tier, limit=40):
+        calls.append((scope, tier))
+        items = per_scope.get((scope, tier), [])
+        return items, len(items)
+
+    monkeypatch.setattr(github, "search_free_issues", search)
+    monkeypatch.setattr(github, "policy_scan", lambda o, r: {"files": [], "ai_flags": [], "legal": []})
+    monkeypatch.setattr(github, "verify_issue", lambda o, r, n, light=False: (
+        {"ok": False, "reason": "someone said they are working on it", "checked_at": "t"} if (r, n) in claims
+        else {"ok": False, "reason": "an open pull request already references it (#9)", "checked_at": "t"} if (r, n) in prs
+        else {"ok": True, "reason": "", "checked_at": "2026-10-07T00:00:00+00:00"}))
+
+    def fake_ask(**kw):
+        import json as _j
+        cand = _j.loads(kw["messages"][0]["content"])["candidates"]
+        return {"text": _j.dumps({"picks": [{"repo": c["repo"], "number": c["number"], "fit": "f", "learn": "l", "hours": 2, "risk": "r"} for c in cand[:3]]}), "cost_usd": 0.001}
+
+    monkeypatch.setattr(agents.llm, "ask", fake_ask)
+    return agents, calls
+
+
+def test_scout_widens_labels_before_giving_up(monkeypatch):
+    agents, calls = _stub_scout(monkeypatch, {("user:acme", 1): [_issue("acme/x", 5)]})
+    res = agents.scout("acme", {"mode": "learn"}, "s")
+    assert [c[1] for c in calls] == [0, 1] and res["picks"] and res["org_used"] == "acme"
+
+
+def test_scout_falls_back_to_next_org_instead_of_dead_end(monkeypatch):
+    agents, calls = _stub_scout(monkeypatch, {("user:beta", 0): [_issue("beta/y", 9)]})
+    events = list(agents.scout_stream("alpha", {"mode": "learn"}, "s", fallbacks=["beta", "gamma"]))
+    res = events[-1]
+    assert res["org_used"] == "beta" and res["picks"][0]["repo"] == "beta/y"
+    assert any("Nothing open and unclaimed in alpha" in e.get("text", "") for e in events)
+    assert res["stats"]["tried"] == ["alpha", "beta"]
+
+
+def test_scout_drops_claimed_issues_and_says_so(monkeypatch):
+    agents, _ = _stub_scout(monkeypatch, {("user:acme", 0): [_issue("acme/x", 1), _issue("acme/x", 2)]}, claims={("x", 1)})
+    res = agents.scout("acme", {"mode": "learn"}, "s")
+    assert [p["number"] for p in res["picks"]] == [2] and res["stats"]["claimed"] == 1
+
+
+def test_scout_empty_everywhere_reports_stats_not_exception(monkeypatch):
+    agents, _ = _stub_scout(monkeypatch, {})
+    res = agents.scout("a", {"mode": "learn"}, "s", fallbacks=["b", "c", "d"])
+    assert res["picks"] == [] and res["stats"]["tried"] == ["a", "b", "c"]  # capped at three attempts
+
+
+def test_scout_makes_one_search_per_tier_not_one_per_issue(monkeypatch):
+    agents, calls = _stub_scout(monkeypatch, {("user:acme", 0): [_issue("acme/x", n) for n in range(1, 30)]})
+    agents.scout("acme", {"mode": "learn"}, "s")
+    assert len(calls) == 1  # the old design made a search per issue and hit GitHub's 30/min limit
+
+
+def test_claim_regex():
+    from backend.github import CLAIM_RE
+    for t in ["I'll take this", "Can I work on this?", "working on it", "please assign this to me", "I would like to work on this"]:
+        assert CLAIM_RE.search(t), t
+    for t in ["Thanks for the report", "this also breaks on windows", "see #123"]:
+        assert not CLAIM_RE.search(t), t
+
+
+def test_verify_issue_reports_reason(monkeypatch):
+    from backend import github
+    monkeypatch.setattr(github, "recent_claim", lambda *a: False)
+    def fake_get(path, params=None, token=None):
+        if path.endswith("/timeline"):
+            return [{"event": "cross-referenced", "source": {"issue": {"number": 77, "state": "open", "pull_request": {}}}}]
+        return {"state": "open", "assignees": []}
+    monkeypatch.setattr(github, "get", fake_get)
+    r = github.verify_issue("o", "r", 1)
+    assert r["ok"] is False and "#77" in r["reason"] and r["linked_prs"] == [77]
+    monkeypatch.setattr(github, "get", lambda path, params=None, token=None: [] if path.endswith("/timeline") else {"state": "open", "assignees": []})
+    assert github.verify_issue("o", "r", 1)["ok"] is True
+
+
+def test_scout_stream_endpoint_emits_ndjson(monkeypatch):
+    c, _ = _hosted(monkeypatch)
+    from backend import agents
+    monkeypatch.setattr(agents, "scout_stream", lambda *a, **k: iter([{"type": "step", "text": "hi"}, {"type": "result", "picks": []}]))
+    r = c.post("/api/scout/stream", json={"org": "x", "profile": {}}, cookies={"oss_session": "sidA"})
+    lines = [json.loads(l) for l in r.text.strip().splitlines()]
+    assert r.status_code == 200 and lines[0]["type"] == "step" and lines[-1]["type"] == "result"
+
+
+def test_scout_drops_issues_with_open_prs_and_counts_them(monkeypatch):
+    agents, _ = _stub_scout(monkeypatch, {("user:acme", 0): [_issue("acme/x", 1), _issue("acme/x", 2), _issue("acme/x", 3)]}, claims={("x", 1)}, prs={("x", 2)})
+    res = agents.scout("acme", {"mode": "learn"}, "s")
+    assert [p["number"] for p in res["picks"]] == [3]
+    assert res["stats"]["claimed"] == 1 and res["stats"]["has_pr"] == 1 and res["picks"][0]["verified_at"].startswith("2026-10-07")
+
+
+# ---- live catalogue pipeline
+def test_txt_coerces_odd_feed_fields():
+    from backend.catalogue import txt
+    assert txt({"a": "hello", "b": 3}) == "hello" and txt(["x", "y"]) == "x y" and txt(None) == "" and len(txt("z" * 500)) == 160
+
+
+def test_top_langs_sorts_by_size_and_drops_non_languages():
+    from backend.catalogue import top_langs
+    assert top_langs({"Makefile": 9, "Go": 900, "Mermaid": 5, "Python": 50, "Shell": 800, "HTML": 700}) == ["Go", "Python"]
+    assert top_langs([{"name": "Rust"}, {"name": "CSS"}]) == ["Rust"]
+
+
+def test_gh_ref_variants():
+    from backend.catalogue import gh_ref
+    assert gh_ref("https://github.com/sugarlabs") == ("sugarlabs", None)
+    assert gh_ref("x", "https://github.com/orgs/meshery/people") == ("meshery", None)  # /orgs/ prefix is not the owner
+    assert gh_ref("https://github.com/apache/airflow.git") == ("apache", "airflow")
+    assert gh_ref("https://git.libssh.org/projects/libssh.git") is None
+
+
+def test_apache_gitbox_urls_map_to_github_mirror(monkeypatch):
+    from backend import catalogue as c
+    monkeypatch.setattr(c, "get_json", lambda *a, **k: {
+        "spark": {"name": "Apache Spark", "repository": ["https://gitbox.apache.org/repos/asf/spark.git"], "category": ["big-data"], "programming-language": ["Scala"]},
+        "other": {"name": "NoRepo", "repository": ["https://svn.apache.org/repos/asf/other"], "category": []}})
+    out = c.fetch_apache()
+    assert [e["repo"] for e in out] == ["apache/spark"] and out[0]["apache"] and "ai-ml-data" in out[0]["domains"]
+
+
+def test_rate_is_bounded_and_rewards_mentoring_and_free_issues():
+    from backend.catalogue import entry, rate
+    plain = rate(entry("a", "a", "a/a", languages=["Python"], stars=100))
+    mentored = rate(entry("b", "b", "b/b", languages=["Python"], gsoc_years=[2026], gfi=20, stars=100))
+    assert 1 <= plain["beginner"] <= 5 and mentored["beginner"] > plain["beginner"] and mentored["beginner"] <= 5
+    assert mentored["rated"] == "auto" and mentored["gsoc"] is True
+    assert rate(entry("c", "c", "c/c", languages=["C++"], stars=9000))["setup"] == "heavy"
+
+
+def test_refresh_survives_a_broken_source_and_never_writes_empty(monkeypatch, tmp_path):
+    from backend import catalogue as c
+    monkeypatch.setattr(c, "FILE", tmp_path / "catalogue.json")
+    good = lambda: [c.entry("Proj", "owner", "owner/proj", languages=["Go"], domains=["cloud-devops"], sources=["apache"], apache=True)]
+    def boom(*a, **k): raise RuntimeError("feed down")
+    monkeypatch.setattr(c, "fetch_gsoc", lambda y: boom())
+    monkeypatch.setattr(c, "fetch_lfx", boom); monkeypatch.setattr(c, "fetch_cncf", boom)
+    monkeypatch.setattr(c, "fetch_apache", good); monkeypatch.setattr(c, "fetch_beginner_list", boom)
+    res = c.refresh(enrich_github=False, log=lambda *_: None)
+    assert res["entries"] == 1 and "cncf" in res["errors"] and "lfx" in res["errors"]
+    doc = json.loads((tmp_path / "catalogue.json").read_text())
+    assert doc["entries"][0]["rated"] == "auto"
+    # everything failing keeps the previous file instead of overwriting it with nothing
+    for n in ("fetch_apache",): monkeypatch.setattr(c, n, boom)
+    assert "error" in c.refresh(enrich_github=False, log=lambda *_: None)
+    assert json.loads((tmp_path / "catalogue.json").read_text())["entries"]
+
+
+def test_matcher_merges_live_entries_without_overriding_curated(monkeypatch):
+    from backend import catalogue as c
+    doc = {"entries": [
+        c.entry("Zulip", "zulip", None, gsoc_years=[2026], sources=["gsoc2026"], languages=["Python"], domains=["web"], notes="live note", rated="auto", beginner=1),
+        c.entry("Brand New Project", "newowner", "newowner/new", languages=["Go"], domains=["cloud-devops"], rated="auto", beginner=3, hackathon=3, setup="medium", gsoc=False, legal="varies", brand=2)]}
+    monkeypatch.setattr(c, "load", lambda: doc)
+    matcher._merged.clear()
+    cat = matcher.catalogue()
+    z = next(o for o in cat if o["name"] == "Zulip")
+    assert z["beginner"] == 5 and z["rated"] == "curated" and z["gsoc_years"] == [2026]   # curated rating kept, badge added
+    assert any(o["name"] == "Brand New Project" for o in cat)
+    assert sum(1 for o in cat if o["name"] == "Zulip") == 1
+    matcher._merged.clear()
+
+
+def test_browse_filters_facets_and_paging(monkeypatch):
+    c, _ = _hosted(monkeypatch)
+    fake = [{"name": f"P{i}", "github": f"o{i}", "repo": f"o{i}/r", "languages": ["Python" if i % 2 else "Go"], "domains": ["web"], "notes": "n",
+             "sources": ["apache" if i % 3 == 0 else "lfx"], "gsoc_years": [], "lfx": i % 3 != 0, "cncf": None, "apache": i % 3 == 0, "stars": i, "gfi": i, "url": "", "ideas_url": "", "rated": "auto"} for i in range(30)]
+    monkeypatch.setattr(matcher, "catalogue", lambda: fake)
+    r = c.get("/api/catalogue/browse?language=Python&source=apache&size=5").json()
+    assert r["total"] == 5 and all(i["languages"] == ["Python"] and i["apache"] for i in r["items"])
+    assert c.get("/api/catalogue/browse?size=7&page=2").json()["items"][0]["name"] != c.get("/api/catalogue/browse?size=7&page=1").json()["items"][0]["name"]
+    assert r["facets"]["language"]["Python"] == 5
+    assert c.get("/api/catalogue/browse?q=p1&size=60").json()["total"] >= 1
+    assert c.get("/api/catalogue/status").status_code == 200
+
+
+def test_refresh_endpoint_requires_admin_when_hosted(monkeypatch):
+    c, _ = _hosted(monkeypatch)
+    monkeypatch.setenv("ADMIN_LOGINS", "someoneelse")
+    assert c.post("/api/catalogue/refresh", cookies={"oss_session": "sidA"}).status_code == 403
+
+
+def test_enrich_retries_flaky_github_and_survives_html_reply(monkeypatch):
+    import httpx
+    from backend import catalogue as c
+    monkeypatch.setattr(c.config, "GITHUB_TOKEN", "t")
+    monkeypatch.setattr(c.time, "sleep", lambda *_: None)
+    e = c.entry("P", "o", "o/p")
+    calls = []
+
+    class R:
+        def __init__(self, code, body): self.status_code, self._b = code, body
+        def json(self):
+            if self._b is None: raise ValueError("Expecting value")
+            return self._b
+
+    seq = [httpx.ConnectError("reset"), R(502, None), R(200, {"data": {"a0": {"issueCount": 7}, "r0": {"stargazerCount": 123, "pushedAt": "2026-10-01T00:00:00Z", "primaryLanguage": {"name": "Go"}, "isArchived": False}}})]
+    def fake_post(*a, **k):
+        calls.append(1); x = seq[len(calls) - 1]
+        if isinstance(x, Exception): raise x
+        return x
+    monkeypatch.setattr(c.httpx, "post", fake_post)
+    c.enrich([e], log=lambda *_: None)
+    assert len(calls) == 3 and e["gfi"] == 7 and e["stars"] == 123 and e["languages"] == ["Go"]
+
+
+def test_enrich_marks_missing_and_archived_repos_dead(monkeypatch):
+    from backend import catalogue as c
+    monkeypatch.setattr(c.config, "GITHUB_TOKEN", "t"); monkeypatch.setattr(c.time, "sleep", lambda *_: None)
+    gone, old = c.entry("Gone", "o", "o/gone"), c.entry("Old", "o", "o/old")
+    class R:
+        status_code = 200
+        def json(self): return {"data": {"a0": {"issueCount": 0}, "r0": None, "a1": {"issueCount": 0}, "r1": {"stargazerCount": 1, "pushedAt": None, "primaryLanguage": None, "isArchived": True}}}
+    monkeypatch.setattr(c.httpx, "post", lambda *a, **k: R())
+    c.enrich([gone, old], log=lambda *_: None)
+    assert gone.get("dead") and old.get("dead")
+
+
+def test_refresh_keeps_catalogue_when_enrichment_blows_up(monkeypatch, tmp_path):
+    from backend import catalogue as c
+    monkeypatch.setattr(c, "FILE", tmp_path / "catalogue.json")
+    ok = lambda: [c.entry("Proj", "owner", "owner/proj", languages=["Go"], domains=["devtools"], sources=["apache"], apache=True)]
+    for n in ("fetch_lfx", "fetch_cncf", "fetch_beginner_list"): monkeypatch.setattr(c, n, lambda *a, **k: [])
+    monkeypatch.setattr(c, "fetch_gsoc", lambda y: ([], [])); monkeypatch.setattr(c, "fetch_apache", ok)
+    def boom(*a, **k): raise RuntimeError("graphql down")
+    monkeypatch.setattr(c, "enrich", boom)
+    res = c.refresh(enrich_github=True, log=lambda *_: None)
+    assert res["entries"] == 1 and json.loads((tmp_path / "catalogue.json").read_text())["entries"][0]["rated"] == "auto"
+
+
+def test_lfx_retries_a_flaky_page_and_keeps_partial_results(monkeypatch):
+    import httpx
+    from backend import catalogue as c
+    monkeypatch.setattr(c.time, "sleep", lambda *_: None)
+    def proj(n): return {"status": "Published", "name": f"P{n}", "lfProjectName": "LF", "repoLink": f"https://github.com/lf/r{n}", "industry": "Cloud",
+                         "programTerms": [{"endDateTime": time.time() + 1000}]}
+    calls = {"n": 0}
+    def fake(url, params=None, timeout=60):
+        calls["n"] += 1
+        key = (params or {}).get("nextPageKey")
+        if key is None: return {"projects": [proj(1)], "nextPageKey": "k2"}
+        if key == "k2":
+            if calls["n"] == 2: raise httpx.ConnectError("reset")          # flaky once, then fine
+            return {"projects": [proj(2)], "nextPageKey": "k3"}
+        raise httpx.ConnectError("down for good")                          # page 3 never works
+    monkeypatch.setattr(c, "get_json", fake)
+    out = c.fetch_lfx(log=lambda *_: None)
+    assert sorted(e["repo"] for e in out) == ["lf/r1", "lf/r2"] and all(e["lfx"] for e in out)   # kept pages 1-2 despite the failure

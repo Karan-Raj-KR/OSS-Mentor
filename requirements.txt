@@ -1,0 +1,6 @@
+openai>=1.68,<3
+fastapi>=0.110
+httpx>=0.27
+python-dotenv>=1.0
+psycopg[binary]>=3.2
+cryptography>=43

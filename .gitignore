@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+learn/*-tour.md
+mentor/profile.md
+mentor/journal.md
+.vercel
+.env*
+!.env.example
+
+# unused launch-video experiment (not part of the app)
+video/node_modules/
+video/out/

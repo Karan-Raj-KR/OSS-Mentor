@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSS Mentor</title>
+<link rel="icon" href="data:,">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14171f;--mute:#5d6678;--line:#e3e6ec;--brand:#38bdf8;--brand-ink:#fff;--ok:#16794a;--warn:#a15c00;--bad:#b42318;--chip:#e8f4ff}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1115;--card:#171a21;--ink:#e8eaf0;--mute:#9aa3b5;--line:#272b35;--brand:#7dd3fc;--brand-ink:#0f1115;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--chip:#0f2233}}
+:root[data-theme=dark]{--bg:#0f1115;--card:#171a21;--ink:#e8eaf0;--mute:#9aa3b5;--line:#272b35;--brand:#7dd3fc;--brand-ink:#0f1115;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--chip:#0f2233}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line)}
+.bar{max-width:880px;margin:0 auto;padding:12px 16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.logo{font-weight:700;letter-spacing:-.01em}
+.tabs{display:flex;gap:4px;margin-left:8px}
+.tab{border:0;background:none;color:var(--mute);padding:6px 12px;border-radius:8px;font:inherit;cursor:pointer}
+.tab[aria-selected=true]{background:var(--chip);color:var(--ink);font-weight:600}
+.spacer{flex:1}
+.meter{font-size:13px;color:var(--mute);display:flex;align-items:center;gap:8px}
+.track{width:90px;height:6px;background:var(--line);border-radius:9px;overflow:hidden}
+.fill{height:100%;width:0;background:var(--ok);transition:width .3s}
+main{max-width:880px;margin:0 auto;padding:24px 16px 80px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+h1{font-size:28px;line-height:1.2;margin:0 0 8px;letter-spacing:-.02em}h2{font-size:20px;margin:0 0 12px}h3{font-size:16px;margin:0 0 6px}
+p{margin:0 0 12px}.mute{color:var(--mute)}.small{font-size:13px}
+button.primary,button.ghost{font:inherit;border-radius:10px;padding:10px 16px;cursor:pointer;border:1px solid transparent}
+button.primary{background:var(--brand);color:var(--brand-ink);font-weight:600}button.primary:disabled{opacity:.5;cursor:not-allowed}
+button.ghost{background:none;border-color:var(--line);color:var(--ink)}
+.opts{display:grid;gap:8px;margin:14px 0}
+.opt{display:flex;gap:10px;align-items:center;padding:12px 14px;border:1px solid var(--line);border-radius:10px;cursor:pointer;background:var(--card)}
+.opt:hover{border-color:var(--brand)}.opt.on{border-color:var(--brand);background:var(--chip)}
+.progress{height:4px;background:var(--line);border-radius:9px;margin-bottom:18px;overflow:hidden}.progress i{display:block;height:100%;background:var(--brand);transition:width .25s}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.chip{display:inline-block;background:var(--chip);border-radius:99px;padding:2px 10px;font-size:12px;margin:0 6px 6px 0}
+.chip.warn{color:var(--warn)}.chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}
+.score{font-size:30px;font-weight:700}.bars{display:grid;gap:4px;margin:10px 0}
+.bar2{display:grid;grid-template-columns:100px 1fr 36px;gap:8px;align-items:center;font-size:13px;color:var(--mute)}
+.bar2 b{display:block;height:6px;border-radius:9px;background:var(--brand)}.bar2 .t{background:var(--line);border-radius:9px;height:6px;display:block}
+.rec{border-color:var(--brand)}
+.md pre{background:var(--bg);padding:12px;border-radius:8px;overflow:auto;font-size:13px}.md code{font-size:.92em}.md img{max-width:100%}
+.chat{display:grid;gap:10px;max-height:52vh;overflow:auto;margin-bottom:12px}
+.msg{padding:10px 14px;border-radius:12px;max-width:92%}.msg.me{background:var(--chip);justify-self:end}.msg.ai{background:var(--bg);border:1px solid var(--line)}
+input[type=text],textarea{width:100%;font:inherit;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+textarea{min-height:80px;resize:vertical}
+.err{background:color-mix(in srgb,var(--bad) 12%,transparent);border:1px solid var(--bad);color:var(--bad);padding:10px 14px;border-radius:10px;margin-bottom:12px}
+.note{background:var(--chip);padding:10px 14px;border-radius:10px;margin-bottom:12px;font-size:14px}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--brand);border-radius:50%;animation:s .8s linear infinite;vertical-align:-2px;margin-right:8px}
+@keyframes s{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+.quote{border-left:3px solid var(--line);padding-left:12px;color:var(--mute);margin:8px 0;font-size:14px;white-space:pre-wrap}
+
+#bg{position:fixed;inset:0;width:100vw;height:100vh;z-index:0;display:none;touch-action:none}
+.has3d #bg{display:block}
+body{background:radial-gradient(1200px 700px at 70% 40%,#000 0%,var(--bg) 60%)}
+#labels{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden}
+.lbl{position:absolute;left:0;top:0;font-size:12px;color:#dfe3ff;text-shadow:0 1px 6px #000;white-space:nowrap;opacity:0;transition:opacity .25s;will-change:transform}
+#tip{position:fixed;left:0;top:0;z-index:6;pointer-events:none;max-width:260px;background:rgba(15,17,28,.92);border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:13px;opacity:0;transition:opacity .15s;display:grid;gap:2px}
+#tip b{font-size:14px}#tip span{color:#c8ccff}#tip em{color:var(--mute);font-style:normal}#tip small{color:var(--mute)}#tip strong{color:var(--brand);margin-top:4px}
+header,main{position:relative;z-index:2}
+header{background:color-mix(in srgb,var(--card) 80%,transparent);backdrop-filter:blur(10px)}
+.has3d .card{background:color-mix(in srgb,var(--card) 74%,transparent);backdrop-filter:blur(14px)}
+.hint3d{display:none}.has3d .hint3d{display:block}
+.legend{position:fixed;left:16px;bottom:12px;z-index:2;display:none;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:var(--mute);max-width:70vw}
+.has3d .legend{display:flex}.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+@media (min-width:900px){.has3d main{margin:0 auto 0 max(16px,5vw);max-width:540px}.legend{left:auto;right:16px;justify-content:flex-end;max-width:46vw}}
+@media (max-width:899px){.has3d #bg{opacity:.35}.legend{display:none!important}}
+@media (prefers-reduced-motion:reduce){.lbl{transition:none}}
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <span class="logo">OSS Mentor</span>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tab-mentor" aria-selected="true">Mentor</button>
+    <button class="tab" role="tab" id="tab-replies" aria-selected="false">PR replies</button>
+  </div>
+  <span class="spacer"></span>
+  <div class="meter" id="who" style="display:none"></div>
+  <div class="meter" title="Spend this session vs. budget"><span id="spend">$0.000</span><div class="track"><div class="fill" id="fill"></div></div><span id="cap"></span></div>
+</div></header>
+<canvas id="bg" aria-hidden="true"></canvas><div id="labels" aria-hidden="true"></div><div id="tip" aria-hidden="true"></div>
+<div class="legend" aria-hidden="true"><span><i style="background:#6ea8ff"></i>Web</span><span><i style="background:#e8c468"></i>AI / data</span><span><i style="background:#34d399"></i>Cloud</span><span><i style="background:#fb7185"></i>Security</span><span><i style="background:#fbbf24"></i>Mobile</span><span><i style="background:#22d3ee"></i>Dev tools</span><span><i style="background:#f2b8a0"></i>Education</span><span>Bigger planet = more beginner-friendly</span></div>
+<main id="app"></main>
+<script src="/static/scene.js"></script>
+
+<script>
+const $=(s,r=document)=>r.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const md=t=>DOMPurify.sanitize(marked.parse(t||''));
+let SID; try{SID=localStorage.getItem('sid')||crypto.randomUUID();localStorage.setItem('sid',SID)}catch{SID=crypto.randomUUID()}
+const S={me:{hosted:false,login:'local'},view:'mentor',step:0,questions:[],answers:{},ranking:null,org:null,scout:null,issue:null,tour:null,history:[],health:{},busy:false,error:'',drafts:null,prUrl:''};
+
+async function api(path,body){
+  const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
+  const j=await r.json().catch(()=>({error:'Bad response from server'}));
+  if(r.status===401){S.me={hosted:true,login:null};render()}
+  if(!r.ok) throw new Error(j.error||j.detail||('HTTP '+r.status));
+  return j;
+}
+async function refreshUsage(){
+  try{const u=await api('/api/usage?session='+SID);const c=u.session.cost_usd,cap=u.session_budget_usd;
+    $('#spend').textContent='$'+c.toFixed(3);$('#cap').textContent='of $'+cap.toFixed(2);
+    const f=$('#fill');f.style.width=Math.min(100,c/cap*100)+'%';f.style.background=c/cap>.8?'var(--bad)':c/cap>.5?'var(--warn)':'var(--ok)';}catch{}
+}
+async function run(fn){S.busy=true;S.error='';render();try{await fn()}catch(e){S.error=e.message}finally{S.busy=false;render();refreshUsage()}}
+const busy=m=>`<p class="mute"><span class="spin"></span>${esc(m)}</p>`;
+const errBox=()=>S.error?`<div class="err" role="alert">${esc(S.error)}</div>`:'';
+
+function render(){
+  const app=$('#app');
+  $('#tab-mentor').setAttribute('aria-selected',S.view==='mentor');$('#tab-replies').setAttribute('aria-selected',S.view==='replies');
+  const who=$('#who');
+  if(S.me.hosted&&S.me.login){who.style.display='flex';who.innerHTML=`${S.me.avatar?`<img src="${esc(S.me.avatar)}" alt="" width="22" height="22" style="border-radius:50%">`:''}@${esc(S.me.login)} <button class="ghost small" id="logout" style="padding:2px 8px">Log out</button>`;$('#logout').onclick=async()=>{await fetch('/auth/logout',{method:'POST'});S.me={hosted:true,login:null};Object.assign(S,{step:0,answers:{},ranking:null,scout:null,tour:null,history:[],drafts:null});render()}}else who.style.display='none';
+  if(S.me.hosted&&!S.me.login){app.innerHTML=`<div class="card"><h1>Connect your GitHub</h1><p class="mute">Sign in with GitHub so the mentor can read public repositories and issues as you, and, only if you choose, help you reply to reviewers on your own pull requests.</p><p class="small mute">We ask for <code>public_repo</code> and <code>read:user</code>. Your token stays on the server, is never shown in the browser, and every reply needs your explicit approval.</p><a href="/auth/login"><button class="primary">Continue with GitHub</button></a></div>`;return}
+  let h='';
+  if(!S.health.openai_key) h+=`<div class="err">No OpenAI API key found on the server. Copy <code>.env.example</code> to <code>.env</code>, add <code>OPENAI_API_KEY</code>, restart. Matching still works without it.</div>`;
+  h+=errBox();
+  h+=S.view==='mentor'?mentorView():repliesView();
+  app.innerHTML=h;bind();
+  if(S.tour&&S.view==='mentor'&&window.mermaid){try{mermaid.initialize({startOnLoad:false,theme:matchMedia('(prefers-color-scheme:dark)').matches?'dark':'default'});mermaid.run({querySelector:'.md code.language-mermaid'})}catch{}}
+}
+
+function mentorView(){
+  if(S.step===0) return `<div class="card"><h1>Make your first open-source contribution</h1>
+   <p class="mute">Answer ten quick questions. We match you to the best organisations, find a first issue that is really free, explain the codebase, and coach you to your own pull request.</p>
+   <p class="small mute">Matching is free and instant. Only scouting, the repo tour and coaching use AI credits, and a budget caps them.</p>
+   <p class="small mute hint3d">Drag to spin the galaxy of organisations. Hover a planet to see what it is about.</p><button class="primary" data-act="start">Start</button></div>`;
+  if(S.step===1){
+    const q=S.questions[S.qi],a=S.answers[q.id],sel=q.multi?(a||[]):a;
+    return `<div class="card"><div class="progress"><i style="width:${(S.qi)/S.questions.length*100}%"></i></div>
+     <p class="small mute">Question ${S.qi+1} of ${S.questions.length}</p><h2>${esc(q.q)}</h2><div class="opts">
+     ${q.options.map(([v,l])=>`<label class="opt ${q.multi?(sel||[]).includes(v):sel===v?'on':''}" data-opt="${esc(v)}"><span>${esc(l)}</span></label>`).join('')}</div>
+     <div class="row"><button class="ghost" data-act="back" ${S.qi?'':'disabled'}>Back</button>
+     <button class="primary" data-act="next" ${(q.multi?(sel||[]).length:sel)?'':'disabled'}>${S.qi===S.questions.length-1?'See my matches':'Next'}</button></div></div>`;
+  }
+  if(S.step===2){
+    const mode=S.answers.mode;
+    return `<h1>Your best-fit organisations</h1><p class="mute">Scored by language, interest, beginner-friendliness, goal and setup. Ratings are judgement, so we verify live next.</p>
+    ${S.ranking.map((o,i)=>`<div class="card ${i===0?'rec':''}"><div class="row"><div class="score">${o.total}<span class="small mute">/55</span></div>
+      <div><h3>${esc(o.org)} ${i===0?'<span class="chip ok">Recommended</span>':''}</h3><div>${o.languages.map(x=>`<span class="chip">${esc(x)}</span>`).join('')}<span class="chip ${o.legal==='cla'?'warn':''}">${esc(o.legal==='none'?'no sign-off':o.legal)}</span></div></div></div>
+      <p class="small mute">${esc(o.notes)}</p>${o.gate?`<div class="chip bad">${esc(o.gate)}</div>`:''}
+      <div class="bars">${Object.entries(o.parts).map(([k,v])=>`<div class="bar2"><span>${k}</span><span class="t"><b style="width:${v/5*100}%"></b></span><em>${v}</em></div>`).join('')}</div>
+      <button class="${i===0?'primary':'ghost'}" data-act="pick" data-i="${i}" ${o.gate?'disabled':''} ${S.busy?'disabled':''}>Choose ${esc(o.org)}</button></div>`).join('')}
+    ${S.busy?busy('Scouting real issues on GitHub...'):''}`;
+  }
+  if(S.step===3){
+    const sc=S.scout;
+    return `<h1>First issues in ${esc(S.org.org)}</h1><p class="mute">Open, unassigned, no linked PR, and no AI restriction found in policy files.</p>
+    ${sc.picks.length?sc.picks.map((p,i)=>`<div class="card"><h3><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.repo)}#${p.number}</a> ${esc(p.title)}</h3>
+      <p>${esc(p.fit)}</p><p class="small mute"><b>You will learn:</b> ${esc(p.learn)}<br><b>Risk:</b> ${esc(p.risk)}</p>
+      <div>${p.hours!=null?`<span class="chip">~${esc(p.hours)}h</span>`:''}${(p.legal||[]).map(l=>`<span class="chip warn">${esc(l)} required</span>`).join('')}${(p.ai_flags||[]).length?`<span class="chip warn" title="${esc(p.ai_flags.map(f=>f.line).join(' | '))}">AI policy: read first</span>`:''}${(p.labels||[]).map(l=>`<span class="chip">${esc(l)}</span>`).join('')}</div>
+      <button class="primary" data-act="issue" data-i="${i}" ${S.busy?'disabled':''}>Work on this</button></div>`).join(''):`<div class="card">No free issues passed the checks. Try another organisation.</div>`}
+    ${sc.skipped.length?`<div class="note"><b>Skipped for policy:</b> ${sc.skipped.map(s=>esc(s.repo)).join(', ')}. Their policy text mentions AI; read it before contributing.</div>`:''}
+    <button class="ghost" data-act="toorgs">Back to organisations</button>${S.busy?busy('Writing your repo tour...'):''}`;
+  }
+  if(S.step===4){
+    const mode=S.answers.mode;
+    const chat=mode==='full'?`<div class="card"><h2>Full-auto mode</h2><p>Full-auto is unavailable in this build. Choose Learn or Semi-auto. The primary guided journey is available at the homepage.</p></div>`:
+    `<div class="card"><h2>${mode==='learn'?'Your coach':'Your pair programmer'}</h2>
+      <div class="chat" id="chat">${S.history.map(m=>`<div class="msg ${m.role==='user'?'me':'ai'} md">${m.role==='user'?esc(m.content):md(m.content)}</div>`).join('')||`<p class="mute">Tell the coach what you think causes the bug, or ask where to start.</p>`}</div>
+      ${S.busy?busy('Thinking...'):''}<div class="row"><input type="text" id="say" placeholder="Type here and press Enter" style="flex:1"><button class="primary" data-act="say" ${S.busy?'disabled':''}>Send</button></div></div>`;
+    return `<h1>${esc(S.issue.repo)}#${S.issue.number}</h1><p class="mute">${esc(S.issue.title)}</p>
+      <div class="card md"><h2>Repo tour</h2>${md(S.tour.markdown)}</div>${chat}
+      <div class="note">You write and submit the PR yourself. Do your own DCO/CLA sign-off, and disclose AI help if the project asks.</div>
+      <button class="ghost" data-act="restart">Start over</button>`;
+  }
+}
+
+function repliesView(){
+  const h=S.health;
+  let out=`<h1>Reply to reviewers</h1><p class="mute">Paste your PR link. New comments are classified cheaply, then replies are drafted in one call. Edit them into your own words before sending.</p>
+  <div class="card"><div class="row"><input type="text" id="pr" placeholder="https://github.com/owner/repo/pull/123" value="${esc(S.prUrl)}" style="flex:1"><button class="primary" data-act="draft" ${S.busy?'disabled':''}>Check comments</button></div></div>
+  ${S.busy?busy('Reading comments...'):''}`;
+  if(S.drafts){
+    if(!S.drafts.drafts.length) out+=`<div class="card">${esc(S.drafts.note||'Nothing new.')}</div>`;
+    else{
+      out+=`${(S.drafts.ai_flags||[]).length?`<div class="err">This project's policy restricts AI-generated messages, so sending is turned off. Rewrite each draft in your own words and post it yourself.<div class="quote">${S.drafts.ai_flags.map(f=>esc(f.line)).join('\n')}</div></div>`:''}<div class="note">${S.drafts.can_post?'Posting is enabled. Only the replies you approve are sent, under your own GitHub account.':'Posting is disabled on this server, so copy the replies manually. (Operator: set AUTO_POST_REPLIES=true and GITHUB_TOKEN.)'}</div>`;
+      out+=S.drafts.drafts.map((d,i)=>`<div class="card"><div class="row"><b>@${esc(d.user)}</b><span class="chip">${esc(d.kind)}</span>${d.needs_code?'<span class="chip warn">needs a code change</span>':''}${d.path?`<span class="small mute">${esc(d.path)}</span>`:''}</div>
+        <div class="quote">${esc(d.comment)}</div>
+        ${d.reply?`<textarea data-reply="${i}" aria-label="Reply to ${esc(d.user)}">${esc(d.reply)}</textarea>
+        <div class="row" style="margin-top:8px"><button class="ghost" data-act="copy" data-i="${i}">Copy</button>${S.drafts.can_post?`<button class="primary" data-act="send" data-i="${i}" ${S.busy?'disabled':''}>Approve and send</button>`:''}</div>`:'<p class="small mute">No reply needed.</p>'}</div>`).join('');
+    }
+  }
+  return out;
+}
+
+function bind(){
+  document.querySelectorAll('[data-opt]').forEach(el=>el.onclick=()=>{
+    const q=S.questions[S.qi],v=el.dataset.opt;
+    if(q.multi){const a=S.answers[q.id]||[];S.answers[q.id]=a.includes(v)?a.filter(x=>x!==v):[...a,v]}else S.answers[q.id]=v;render()});
+  document.querySelectorAll('[data-act]').forEach(el=>el.onclick=()=>act(el.dataset.act,el));
+  const say=$('#say');if(say){say.onkeydown=e=>{if(e.key==='Enter')act('say')};say.focus()}
+  const chat=$('#chat');if(chat)chat.scrollTop=chat.scrollHeight;
+}
+
+async function act(a,el){
+  const i=el&&el.dataset.i!==undefined?+el.dataset.i:0;
+  if(a==='start')run(async()=>{S.questions=await api('/api/questions');S.qi=0;S.step=1});
+  else if(a==='back'){S.qi--;render()}
+  else if(a==='next'){
+    if(S.qi<S.questions.length-1){S.qi++;render()}
+    else run(async()=>{S.ranking=(await api('/api/match',S.answers)).ranking;S.step=2;stage3d('ranked')})}
+  else if(a==='pick')run(async()=>{S.org=S.ranking[i];stage3d('selected');try{S.scout=await api('/api/scout',{org:S.org.github,profile:S.answers,session:SID})}catch(e){stage3d('ranked');throw e}S.step=3;stage3d('working')});
+  else if(a==='toorgs'){S.step=2;stage3d('ranked');render()}
+  else if(a==='issue')run(async()=>{S.issue=S.scout.picks[i];S.history=[];
+    S.tour=await api('/api/tour',{repo:S.issue.repo,issue_title:S.issue.title,level:S.answers.skill,session:SID});S.step=4});
+  else if(a==='say'){
+    const box=$('#say'),t=box.value.trim();if(!t)return;S.history.push({role:'user',content:t});box.value='';
+    run(async()=>{const r=await api('/api/coach',{mode:S.answers.mode,context:S.tour.markdown+'\nIssue: '+S.issue.title,history:S.history,session:SID});S.history.push({role:'assistant',content:r.reply})})}
+  else if(a==='restart'){Object.assign(S,{step:0,answers:{},ranking:null,org:null,scout:null,issue:null,tour:null,history:[]});stage3d('explore');render()}
+  else if(a==='draft'){S.prUrl=$('#pr').value.trim();run(async()=>{S.drafts=await api('/api/replies/draft',{pr_url:S.prUrl,session:SID})})}
+  else if(a==='copy'){const t=document.querySelector(`[data-reply="${i}"]`).value;navigator.clipboard&&navigator.clipboard.writeText(t)}
+  else if(a==='send'){const d=S.drafts.drafts[i],t=document.querySelector(`[data-reply="${i}"]`).value;
+    run(async()=>{await api('/api/replies/send',{pr_url:S.prUrl,items:[{id:d.id,source:d.source,reply:t}],disclose:true});S.drafts.drafts.splice(i,1)})}
+}
+$('#tab-mentor').onclick=()=>{S.view='mentor';render()};
+$('#tab-replies').onclick=()=>{S.view='replies';render()};
+function stage3d(st){if(!window.Scene||!Scene.available)return;
+  if(st==='ranked')Scene.setStage('ranked',{focus:S.ranking.map(r=>r.org),scores:Object.fromEntries(S.ranking.map(r=>[r.org,r.total]))});
+  else if(st==='selected'||st==='working')Scene.setStage(st,{pick:S.org.org});else Scene.setStage(st)}
+if(window.Scene)Scene.onPick=name=>{const i=(S.ranking||[]).findIndex(r=>r.org===name);if(i>=0&&S.step===2&&!S.busy&&!S.ranking[i].gate)act('pick',{dataset:{i}})};
+(async()=>{try{S.health=await api('/api/health')}catch{}try{if(window.Scene&&window.THREE)Scene.init(await api('/api/orgs'))}catch{}try{S.me=await api('/api/me')}catch{}render();if(!S.me.hosted||S.me.login)refreshUsage()})();
+</script>
+</body>
+</html>

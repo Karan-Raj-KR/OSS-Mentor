@@ -1,0 +1,17 @@
+{
+  "label": "Controlled fixture execution by the engineer; attaching this is student-supplied evidence, not an OSS Mentor runner attestation",
+  "results": [
+    {
+      "stage": "before",
+      "command": "python -m pytest -q",
+      "exit_status": 1,
+      "output": "FF                                                                       [100%]\n=================================== FAILURES ===================================\n___________________________ test_preserves_last_item ___________________________\n\n    def test_preserves_last_item():\n>       assert parse([1, 2, 3]) == [1, 2, 3]\nE       assert [1, 2] == [1, 2, 3]\nE         \nE         Right contains one more item: 3\nE         Use -v to get more diff\n\ntest_parser.py:5: AssertionError\n___________________________ test_empty_and_singleton ___________________________\n\n    def test_empty_and_singleton():\n        assert parse([]) == []\n>       assert parse([7]) == [7]\nE       assert [] == [7]\nE         \nE         Right contains one more item: 7\nE         Use -v to get more diff\n\ntest_parser.py:10: AssertionError\n=========================== short test summary info ============================\nFAILED test_parser.py::test_preserves_last_item - assert [1, 2] == [1, 2, 3]\nFAILED test_parser.py::test_empty_and_singleton - assert [] == [7]\n2 failed in 0.01s\n"
+    },
+    {
+      "stage": "after",
+      "command": "python -m pytest -q",
+      "exit_status": 0,
+      "output": "..                                                                       [100%]\n2 passed in 0.00s\n"
+    }
+  ]
+}

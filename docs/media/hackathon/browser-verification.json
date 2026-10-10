@@ -1,0 +1,18 @@
+{
+  "desktop": "1440x1000",
+  "narrow": "390x844",
+  "browser_errors": [],
+  "flows": [
+    "profile",
+    "deterministic match",
+    "simulated verification",
+    "tour",
+    "fetched code",
+    "diff attachment",
+    "attributed test evidence",
+    "failed checkpoint",
+    "successful retry",
+    "persisted reload",
+    "diff invalidation"
+  ]
+}
